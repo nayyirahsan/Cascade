@@ -4,25 +4,15 @@ export const BASE_BACKOFF_MS = 50;
 export const MAX_BACKOFF_MS = 2000;
 export const PROPAGATION_DELAY_MS = 10;
 
-let messageCounter = 0;
-
-export function resetMessageCounter(): void {
-  messageCounter = 0;
-}
-
-export function createMessageId(): MessageId {
-  messageCounter += 1;
-  return `msg-${messageCounter}`;
-}
-
 export function createMessage(
+  id: MessageId,
   sourceId: NodeId,
   targetId: NodeId,
   createdAt: number,
   retryCount = 0,
 ): Message {
   return {
-    id: createMessageId(),
+    id,
     sourceId,
     targetId,
     retryCount,

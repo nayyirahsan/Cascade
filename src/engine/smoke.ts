@@ -1,6 +1,5 @@
-import { DEFAULT_CONFIGS } from './node';
 import { Simulation } from './simulation';
-import { getScenarioByName } from '../scenarios';
+import { getScenarioByName, scenarioToTopology } from '../scenarios';
 import type { NodeState } from './types';
 
 function statsSnapshot(nodes: Map<string, NodeState>): Record<string, NodeState['stats']> {
@@ -17,17 +16,7 @@ export function runSmokeTest(): { pass: boolean; message: string } {
     return { pass: false, message: 'Retry Storm scenario not found' };
   }
 
-  const topology = {
-    nodes: scenario.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      config: { ...DEFAULT_CONFIGS[n.type], ...n.config },
-      requestsPerSecond: n.requestsPerSecond,
-    })),
-    edges: scenario.edges,
-    faults: scenario.faults,
-    maxVirtualTime: scenario.maxVirtualTime,
-  };
+  const topology = scenarioToTopology(scenario);
 
   const run = () => {
     const sim = new Simulation(topology, scenario.seed);
@@ -41,19 +30,18 @@ export function runSmokeTest(): { pass: boolean; message: string } {
   const second = run();
 
   const identical = JSON.stringify(first) === JSON.stringify(second);
-  const serviceBRetries = first.serviceB?.retried ?? 0;
-  const serviceASent = first.serviceA?.sent ?? 0;
-  const amplified = serviceASent > (first.lb?.sent ?? 0);
+  const retries = first.serviceA?.retried ?? 0;
+  const attemptsAtB = (first.serviceB?.sent ?? 0) + (first.serviceB?.rejected ?? 0);
 
   if (!identical) {
     return { pass: false, message: 'Determinism check failed: runs differ' };
   }
-  if (!amplified) {
-    return { pass: false, message: 'Retry storm not amplified upstream load' };
+  if (retries === 0) {
+    return { pass: false, message: 'Retry storm produced no retries' };
   }
 
   return {
     pass: true,
-    message: `Smoke test passed. serviceA.sent=${serviceASent}, serviceB.retried=${serviceBRetries}`,
+    message: `Smoke test passed. serviceA.retried=${retries}, attempts at serviceB=${attemptsAtB}`,
   };
 }

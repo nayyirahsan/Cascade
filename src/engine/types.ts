@@ -43,6 +43,8 @@ export type EventType =
 
 export interface SimEvent {
   id: string;
+  /** Monotonic insertion sequence; breaks virtualTime ties deterministically (FIFO). */
+  seq: number;
   type: EventType;
   virtualTime: number;
   payload: Record<string, unknown>;

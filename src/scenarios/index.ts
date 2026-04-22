@@ -1,4 +1,5 @@
-import type { FaultDefinition, NodeConfig, NodeType } from '../engine/types';
+import { DEFAULT_CONFIGS } from '../engine/node';
+import type { FaultDefinition, NodeConfig, NodeType, TopologyInput } from '../engine/types';
 
 export interface ScenarioNode {
   id: string;
@@ -10,6 +11,7 @@ export interface ScenarioNode {
 
 export interface Scenario {
   name: string;
+  description: string;
   seed: number;
   nodes: ScenarioNode[];
   edges: Array<{ source: string; target: string }>;
@@ -36,6 +38,7 @@ function chainX(index: number, startX = 60, y = 200) {
 export const scenarios: Scenario[] = [
   {
     name: 'Retry Storm',
+    description: 'At t=0.2s Service B turns slow. A\'s timeouts fire, its retries pile onto B, and B\'s circuit breaker slams open — watch yellow retry particles amplify the load.',
     seed: 42,
     maxVirtualTime: 5000,
     nodes: [
@@ -51,6 +54,7 @@ export const scenarios: Scenario[] = [
   },
   {
     name: 'Cascading Failure',
+    description: 'The database dies at t=0.3s. B burns its retry budget, the DB breaker opens, and failures propagate all the way back to the load balancer.',
     seed: 7,
     maxVirtualTime: 5000,
     nodes: [
@@ -68,6 +72,7 @@ export const scenarios: Scenario[] = [
   },
   {
     name: 'Circuit Breaker Recovery',
+    description: 'The DB fails at t=0.2s and heals at t=2s. Watch the breaker go CLOSED → OPEN → HALF_OPEN, probe, and recover.',
     seed: 99,
     maxVirtualTime: 8000,
     nodes: [
@@ -86,6 +91,7 @@ export const scenarios: Scenario[] = [
   },
   {
     name: 'Thundering Herd',
+    description: 'Three services share one small database. A latency spike makes their timeouts fire together — the synchronized retries saturate the DB queue.',
     seed: 13,
     maxVirtualTime: 6000,
     nodes: [
@@ -112,6 +118,7 @@ export const scenarios: Scenario[] = [
   },
   {
     name: 'Queue Saturation',
+    description: '40 req/s into a service with queue depth 3. The slow DB backs everything up; watch the queue bars max out and rejections climb.',
     seed: 21,
     maxVirtualTime: 5000,
     nodes: [
@@ -134,4 +141,18 @@ export const scenarios: Scenario[] = [
 
 export function getScenarioByName(name: string): Scenario | undefined {
   return scenarios.find((s) => s.name === name);
+}
+
+export function scenarioToTopology(scenario: Scenario): TopologyInput {
+  return {
+    nodes: scenario.nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      config: { ...DEFAULT_CONFIGS[n.type], ...n.config },
+      requestsPerSecond: n.requestsPerSecond,
+    })),
+    edges: scenario.edges,
+    faults: scenario.faults,
+    maxVirtualTime: scenario.maxVirtualTime,
+  };
 }

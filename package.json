@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "smoke": "npx tsx src/engine/runSmoke.ts",
     "benchmark": "npx tsx src/engine/runBenchmark.ts",
     "speed-test": "npx tsx src/engine/runSpeedTest.ts"
@@ -33,6 +35,7 @@
     "tsx": "^4.22.4",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.9"
   }
 }

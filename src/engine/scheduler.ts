@@ -4,7 +4,9 @@ function compareEvents(a: SimEvent, b: SimEvent): number {
   if (a.virtualTime !== b.virtualTime) {
     return a.virtualTime - b.virtualTime;
   }
-  return a.id.localeCompare(b.id);
+  // Numeric seq gives FIFO tie-breaking; string ids would sort "evt-10" before
+  // "evt-2" and localeCompare is locale-sensitive across environments.
+  return a.seq - b.seq;
 }
 
 export class EventQueue {

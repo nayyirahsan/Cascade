@@ -1,12 +1,6 @@
 import { createPrng, type Prng } from './prng';
 import { EventQueue } from './scheduler';
-import {
-  PROPAGATION_DELAY_MS,
-  computeBackoffMs,
-  createMessage,
-  createMessageId,
-  resetMessageCounter,
-} from './message';
+import { PROPAGATION_DELAY_MS, computeBackoffMs, createMessage } from './message';
 import { createNodeState, processingTimeMs } from './node';
 import type {
   FaultDefinition,
@@ -29,20 +23,22 @@ interface PendingQueueItem {
   isResponse: boolean;
   traceId: string;
   originId: NodeId;
+  path: NodeId[];
+  isProbe: boolean;
 }
 
 interface MessageMeta {
   isResponse: boolean;
   traceId: string;
   originId: NodeId;
+  /**
+   * Call stack of upstream nodes, ending with the immediate caller of this
+   * message's target. Responses pop it to retrace the request path in reverse.
+   */
+  path: NodeId[];
+  isProbe: boolean;
   dispatchedAt: number;
   arriveAt: number;
-}
-
-let eventCounter = 0;
-
-function resetEventCounter(): void {
-  eventCounter = 0;
 }
 
 function edgeKey(source: NodeId, target: NodeId): string {
@@ -68,19 +64,24 @@ export class Simulation {
   private eventsProcessed = 0;
   private activeTraces = new Set<string>();
   private topologyInput: TopologyInput;
+  private eventCounter = 0;
+  private messageCounter = 0;
+  private trace: string[] | null = null;
 
-  constructor(topology: TopologyInput, seed: number) {
+  constructor(topology: TopologyInput, seed: number, options?: { trace?: boolean }) {
     this.seed = seed;
     this.prng = createPrng(seed);
     this.maxVirtualTime = topology.maxVirtualTime ?? 30_000;
     this.topologyInput = topology;
+    this.trace = options?.trace ? [] : null;
     this.initTopology(topology);
     this.scheduleFaultTimeline(topology.faults ?? []);
   }
 
   private initTopology(topology: TopologyInput): void {
-    resetEventCounter();
-    resetMessageCounter();
+    this.eventCounter = 0;
+    this.messageCounter = 0;
+    if (this.trace) this.trace = [];
     this.queue = new EventQueue();
     this.virtualTime = 0;
     this.nodes.clear();
@@ -109,14 +110,16 @@ export class Simulation {
     }
   }
 
-  private nextEventId(): string {
-    eventCounter += 1;
-    return `evt-${eventCounter}`;
+  private nextMessageId(): string {
+    this.messageCounter += 1;
+    return `msg-${this.messageCounter}`;
   }
 
-  private enqueue(event: Omit<SimEvent, 'id'> & { id?: string }): void {
+  private enqueue(event: Omit<SimEvent, 'id' | 'seq'>): void {
+    this.eventCounter += 1;
     this.queue.push({
-      id: event.id ?? this.nextEventId(),
+      id: `evt-${this.eventCounter}`,
+      seq: this.eventCounter,
       type: event.type,
       virtualTime: event.virtualTime,
       payload: event.payload,
@@ -181,7 +184,9 @@ export class Simulation {
   step(): boolean {
     const event = this.queue.peek();
     if (!event) {
-      return this.hasActiveWork();
+      // No scheduled events means no further progress is possible; returning
+      // hasActiveWork() here could loop forever without advancing time.
+      return false;
     }
     if (this.virtualTime >= this.maxVirtualTime) {
       return false;
@@ -189,6 +194,9 @@ export class Simulation {
 
     this.queue.pop();
     this.virtualTime = event.virtualTime;
+    if (this.trace) {
+      this.trace.push(`${event.virtualTime}|${event.seq}|${event.type}`);
+    }
     this.processEvent(event);
     this.eventsProcessed += 1;
     this.drainQueues();
@@ -239,6 +247,56 @@ export class Simulation {
 
   getEventsProcessed(): number {
     return this.eventsProcessed;
+  }
+
+  // Cheap O(1)/O(nodes) accessors for the render loop. getState() deep-copies
+  // every message and the whole event heap — far too expensive per frame.
+
+  getVirtualTime(): number {
+    return this.virtualTime;
+  }
+
+  getSeed(): number {
+    return this.seed;
+  }
+
+  /** True when no events remain and nothing is in flight — playback can stop. */
+  isIdle(): boolean {
+    if (this.queue.size() > 0) return false;
+    for (const node of this.nodes.values()) {
+      if (node.inFlight > 0) return false;
+    }
+    return true;
+  }
+
+  getEdges(): Array<{ source: NodeId; target: NodeId }> {
+    return [...this.edges];
+  }
+
+  getFaults(): Map<NodeId, FaultType> {
+    return new Map(this.faults);
+  }
+
+  getNodeStates(): Map<NodeId, NodeState> {
+    return new Map(
+      [...this.nodes.entries()].map(([id, node]) => [
+        id,
+        { ...node, config: { ...node.config }, stats: { ...node.stats } },
+      ]),
+    );
+  }
+
+  getInFlightMessages(): Message[] {
+    const result: Message[] = [];
+    for (const msg of this.messages.values()) {
+      if (msg.status === 'IN_FLIGHT') result.push({ ...msg });
+    }
+    return result;
+  }
+
+  /** Ordered log of processed events; only populated when constructed with { trace: true }. */
+  getTrace(): string[] {
+    return this.trace ? [...this.trace] : [];
   }
 
   getMaxVirtualTime(): number {
@@ -373,41 +431,45 @@ export class Simulation {
     const isResponse = Boolean(event.payload.isResponse);
     const traceId = event.payload.traceId as string;
     const originId = event.payload.originId as NodeId;
+    const path = (event.payload.path as NodeId[] | undefined) ?? [];
+    const isProbe = Boolean(event.payload.isProbe);
 
     const target = this.getNode(targetId);
 
     if (target.circuit === 'OPEN') {
       target.stats.rejected += 1;
-      this.handleTraceFailure(traceId, originId, targetId, messageId);
+      this.handleTraceFailure(traceId, originId);
+      this.releaseMessage(messageId);
       return;
     }
 
-    if (target.circuit === 'HALF_OPEN' && !event.payload.isProbe) {
+    if (target.circuit === 'HALF_OPEN' && !isProbe) {
       target.stats.rejected += 1;
-      this.handleTraceFailure(traceId, originId, targetId, messageId);
+      this.handleTraceFailure(traceId, originId);
+      this.releaseMessage(messageId);
       return;
     }
 
     if (target.inFlight >= target.config.concurrencyLimit) {
       const queue = this.pendingQueues.get(targetId) ?? [];
       if (queue.length < target.config.queueDepth) {
-        queue.push({ messageId, sourceId, targetId, isResponse, traceId, originId });
+        queue.push({ messageId, sourceId, targetId, isResponse, traceId, originId, path, isProbe });
         this.pendingQueues.set(targetId, queue);
         target.queuedCount = queue.length;
         return;
       }
       target.stats.rejected += 1;
-      this.handleTraceFailure(traceId, originId, targetId, messageId);
+      this.handleTraceFailure(traceId, originId);
+      this.releaseMessage(messageId);
       return;
     }
 
-    const message = this.messages.get(messageId);
+    let message = this.messages.get(messageId);
     if (message) {
       message.status = 'IN_FLIGHT';
     } else {
-      const newMsg = createMessage(sourceId, targetId, this.virtualTime);
-      newMsg.id = messageId;
-      this.messages.set(messageId, newMsg);
+      message = createMessage(messageId, sourceId, targetId, this.virtualTime);
+      this.messages.set(messageId, message);
     }
 
     const latency =
@@ -420,23 +482,34 @@ export class Simulation {
       isResponse,
       traceId,
       originId,
+      path,
+      isProbe,
       dispatchedAt: this.virtualTime,
       arriveAt,
     });
     target.inFlight += 1;
     target.stats.sent += 1;
 
+    // Tag ARRIVE/TIMEOUT with the attempt number so events scheduled for an
+    // earlier attempt are dropped once the message has been retried; message
+    // ids are reused across retries.
+    const attempt = message.retryCount;
+
     this.enqueue({
       type: 'MESSAGE_ARRIVE',
       virtualTime: arriveAt,
-      payload: { messageId, isProbe: Boolean(event.payload.isProbe) },
+      payload: { messageId, attempt, isProbe },
     });
 
-    const timeoutAt = this.virtualTime + target.config.timeoutMs;
+    // Timeouts belong to the CALLER: the source decides how long it waits for
+    // this hop. Using the target's timeout made "svc times out on a slow db"
+    // configs (e.g. Thundering Herd) silently never fire.
+    const caller = this.nodes.get(sourceId);
+    const timeoutMs = caller ? caller.config.timeoutMs : target.config.timeoutMs;
     this.enqueue({
       type: 'MESSAGE_TIMEOUT',
-      virtualTime: timeoutAt,
-      payload: { messageId, targetId },
+      virtualTime: this.virtualTime + timeoutMs,
+      payload: { messageId, attempt, targetId },
     });
   }
 
@@ -448,9 +521,9 @@ export class Simulation {
     const targetId = downstream[meta.roundRobinIndex % downstream.length];
     meta.roundRobinIndex += 1;
 
-    const traceId = createMessageId();
+    const traceId = this.nextMessageId();
     this.activeTraces.add(traceId);
-    const messageId = createMessageId();
+    const messageId = this.nextMessageId();
 
     const lb = this.getNode(lbId);
     lb.stats.sent += 1;
@@ -465,6 +538,7 @@ export class Simulation {
         isResponse: false,
         traceId,
         originId: lbId,
+        path: [lbId],
       },
     });
   }
@@ -473,6 +547,7 @@ export class Simulation {
     const messageId = event.payload.messageId as string;
     const message = this.messages.get(messageId);
     if (!message || message.status !== 'IN_FLIGHT') return;
+    if ((event.payload.attempt as number) !== message.retryCount) return;
 
     const meta = this.messageMeta.get(messageId);
     if (!meta) return;
@@ -500,15 +575,18 @@ export class Simulation {
       }
 
       if (meta.isResponse) {
-        target.stats.succeeded += 1;
         if (message.targetId === meta.originId) {
+          // completeTrace counts the success at the origin; counting here too
+          // would double-count.
           this.completeTrace(meta.traceId, meta.originId);
         } else {
-          this.sendHop(message.targetId, message.sourceId, meta, true);
+          target.stats.succeeded += 1;
+          this.sendResponseHop(message.targetId, meta);
         }
       } else {
         this.forwardOrComplete(meta, message);
       }
+      this.releaseMessage(message.id);
       return;
     }
 
@@ -518,12 +596,12 @@ export class Simulation {
   private sendHop(
     sourceId: NodeId,
     targetId: NodeId,
-    meta: MessageMeta,
+    meta: Pick<MessageMeta, 'traceId' | 'originId' | 'isProbe'>,
     isResponse: boolean,
-    isProbe = false,
+    path: NodeId[],
   ): void {
-    const messageId = createMessageId();
-    this.messages.set(messageId, createMessage(sourceId, targetId, this.virtualTime));
+    const messageId = this.nextMessageId();
+    this.messages.set(messageId, createMessage(messageId, sourceId, targetId, this.virtualTime));
     this.enqueue({
       type: 'MESSAGE_SEND',
       virtualTime: this.virtualTime,
@@ -534,9 +612,20 @@ export class Simulation {
         isResponse,
         traceId: meta.traceId,
         originId: meta.originId,
-        isProbe,
+        path,
+        isProbe: meta.isProbe,
       },
     });
+  }
+
+  /** Route a response one hop back up the recorded call path. */
+  private sendResponseHop(fromId: NodeId, meta: MessageMeta): void {
+    const caller = meta.path[meta.path.length - 1];
+    if (!caller) {
+      this.completeTrace(meta.traceId, meta.originId);
+      return;
+    }
+    this.sendHop(fromId, caller, meta, true, meta.path.slice(0, -1));
   }
 
   private forwardOrComplete(meta: MessageMeta, message: Message): void {
@@ -544,12 +633,12 @@ export class Simulation {
     const downstream = this.downstreamOf(message.targetId);
 
     if (node.type !== 'Database' && downstream.length > 0) {
-      this.sendHop(message.targetId, downstream[0], meta, false);
+      this.sendHop(message.targetId, downstream[0], meta, false, [...meta.path, message.targetId]);
       return;
     }
 
     node.stats.succeeded += 1;
-    this.sendHop(message.targetId, message.sourceId, meta, true);
+    this.sendResponseHop(message.targetId, meta);
   }
 
   private completeTrace(traceId: string, originId: NodeId): void {
@@ -584,6 +673,7 @@ export class Simulation {
     const messageId = event.payload.messageId as string;
     const message = this.messages.get(messageId);
     if (!message || message.status !== 'IN_FLIGHT') return;
+    if ((event.payload.attempt as number) !== message.retryCount) return;
 
     const target = this.getNode(message.targetId);
     const meta = this.messageMeta.get(messageId);
@@ -595,7 +685,8 @@ export class Simulation {
   private scheduleRetry(meta: MessageMeta, message: Message): void {
     const caller = this.nodes.get(message.sourceId);
     if (!caller) {
-      this.handleTraceFailure(meta.traceId, meta.originId, message.targetId, message.id);
+      this.handleTraceFailure(meta.traceId, meta.originId);
+      this.releaseMessage(message.id);
       return;
     }
 
@@ -615,24 +706,32 @@ export class Simulation {
           traceId: meta.traceId,
           originId: meta.originId,
           isResponse: meta.isResponse,
+          path: meta.path,
+          isProbe: meta.isProbe,
         },
       });
     } else {
-      this.handleTraceFailure(meta.traceId, meta.originId, message.targetId, message.id);
+      this.handleTraceFailure(meta.traceId, meta.originId);
+      this.releaseMessage(message.id);
     }
   }
 
-  private handleTraceFailure(
-    traceId: string,
-    originId: NodeId,
-    _failedAt: NodeId,
-    _messageId: string,
-  ): void {
+  private handleTraceFailure(traceId: string, originId: NodeId): void {
     this.activeTraces.delete(traceId);
     const origin = this.nodes.get(originId);
     if (origin) {
       origin.stats.failed += 1;
     }
+  }
+
+  /**
+   * Drop a message that reached a terminal state. Without this the messages
+   * map grows unbounded and per-frame snapshot cost grows with run length.
+   * Stale ARRIVE/TIMEOUT events for released ids are guarded by null checks.
+   */
+  private releaseMessage(messageId: string): void {
+    this.messages.delete(messageId);
+    this.messageMeta.delete(messageId);
   }
 
   private handleRetryScheduled(event: SimEvent): void {
@@ -651,6 +750,8 @@ export class Simulation {
         isResponse: event.payload.isResponse,
         traceId: event.payload.traceId,
         originId: event.payload.originId,
+        path: event.payload.path,
+        isProbe: event.payload.isProbe,
       },
     });
   }
@@ -675,8 +776,8 @@ export class Simulation {
 
     const downstream = this.downstreamOf(nodeId);
     const probeTarget = downstream[0] ?? nodeId;
-    const probeId = createMessageId();
-    this.messages.set(probeId, createMessage(nodeId, probeTarget, this.virtualTime));
+    const probeId = this.nextMessageId();
+    this.messages.set(probeId, createMessage(probeId, nodeId, probeTarget, this.virtualTime));
 
     this.enqueue({
       type: 'MESSAGE_SEND',
@@ -686,8 +787,9 @@ export class Simulation {
         sourceId: nodeId,
         targetId: probeTarget,
         isResponse: false,
-        traceId: createMessageId(),
+        traceId: this.nextMessageId(),
         originId: nodeId,
+        path: [nodeId],
         isProbe: true,
       },
     });
@@ -746,6 +848,8 @@ export class Simulation {
             isResponse: item.isResponse,
             traceId: item.traceId,
             originId: item.originId,
+            path: item.path,
+            isProbe: item.isProbe,
           },
         });
       }
@@ -755,7 +859,9 @@ export class Simulation {
 
 export function benchmarkSimulation(sim: Simulation, targetTime = 10_000): number {
   const start = performance.now();
-  while (sim.getState().virtualTime < targetTime && sim.step()) {
+  // getVirtualTime() not getState(): the latter deep-copies state and would
+  // make the benchmark measure clone overhead instead of engine throughput.
+  while (sim.getVirtualTime() < targetTime && sim.step()) {
     // process events as fast as possible
   }
   const elapsed = performance.now() - start;
