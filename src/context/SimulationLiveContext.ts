@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode, type RefObject } from 'react';
+import { createContext, useContext, type RefObject } from 'react';
 import type { Particle, SimulationSnapshot } from '../hooks/useSimulation';
 
 export interface SimulationLiveContextValue {
@@ -6,20 +6,10 @@ export interface SimulationLiveContextValue {
   particlesRef: RefObject<Particle[]>;
 }
 
-const SimulationLiveContext = createContext<SimulationLiveContextValue | null>(null);
-
-export function SimulationLiveProvider({
-  value,
-  children,
-}: {
-  value: SimulationLiveContextValue;
-  children: ReactNode;
-}) {
-  return <SimulationLiveContext.Provider value={value}>{children}</SimulationLiveContext.Provider>;
-}
+export const SimulationLiveContext = createContext<SimulationLiveContextValue | null>(null);
 
 export function useSimulationLive(): SimulationLiveContextValue {
   const ctx = useContext(SimulationLiveContext);
-  if (!ctx) throw new Error('useSimulationLive must be used within SimulationLiveProvider');
+  if (!ctx) throw new Error('useSimulationLive must be used within SimulationLiveContext');
   return ctx;
 }

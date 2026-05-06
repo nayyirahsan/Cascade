@@ -134,13 +134,29 @@ function ParticleOverlay({
 
           for (const p of particles) {
             const pathKey = `${p.edgeSource}->${p.edgeTarget}`;
+            // Responses travel the same edge in reverse; reuse the forward
+            // path and flip the traversal direction.
+            let reversed = false;
             let hopPath = pathCache.get(pathKey);
             if (hopPath === undefined) {
               const edge = edges.find((e) => e.source === p.edgeSource && e.target === p.edgeTarget);
               hopPath = edge ? buildEdgePath(edge, nodeInternals) : null;
               pathCache.set(pathKey, hopPath);
             }
-            if (!hopPath) continue;
+            if (!hopPath) {
+              const reverseKey = `${p.edgeTarget}->${p.edgeSource}`;
+              let reversePath = pathCache.get(reverseKey);
+              if (reversePath === undefined) {
+                const edge = edges.find(
+                  (e) => e.source === p.edgeTarget && e.target === p.edgeSource,
+                );
+                reversePath = edge ? buildEdgePath(edge, nodeInternals) : null;
+                pathCache.set(reverseKey, reversePath);
+              }
+              if (!reversePath) continue;
+              hopPath = reversePath;
+              reversed = true;
+            }
 
             let animProgress: number;
             if (playing) {
@@ -156,13 +172,14 @@ function ParticleOverlay({
 
             const stagger = animProgress < 0.06 ? hashPhase(p.id) * 0.05 : 0;
             const pathT = Math.min(Math.max(animProgress + stagger, 0), 1) * PARTICLE_END;
-            const { x, y } = pointOnHopPath(hopPath, pathT);
+            const { x, y } = pointOnHopPath(hopPath, reversed ? 1 - pathT : pathT);
 
             const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             circle.setAttribute('cx', String(x));
             circle.setAttribute('cy', String(y));
-            circle.setAttribute('r', '5');
+            circle.setAttribute('r', reversed ? '3.5' : '5');
             circle.setAttribute('fill', COLORS[p.color]);
+            if (reversed) circle.setAttribute('opacity', '0.7');
             group.appendChild(circle);
           }
         } else if (!playing && !stepping) {

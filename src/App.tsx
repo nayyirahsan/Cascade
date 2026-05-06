@@ -5,7 +5,7 @@ import FaultPanel from './components/FaultPanel';
 import NodePanel from './components/NodePanel';
 import Palette from './components/Palette';
 import ScenarioMenu from './components/ScenarioMenu';
-import { SimulationLiveProvider } from './context/SimulationLiveContext';
+import { SimulationLiveContext } from './context/SimulationLiveContext';
 import { useSimulation } from './hooks/useSimulation';
 
 function PanelShell({
@@ -41,7 +41,7 @@ export default function App() {
   );
 
   return (
-    <SimulationLiveProvider value={liveValue}>
+    <SimulationLiveContext.Provider value={liveValue}>
       <div className="flex h-screen min-w-[1280px] flex-col overflow-hidden bg-[#0a0c10]">
         <header className="shrink-0 border-b border-slate-800/80 bg-slate-950/80 px-5 py-3 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4">
@@ -77,6 +77,6 @@ export default function App() {
           </aside>
         </div>
       </div>
-    </SimulationLiveProvider>
+    </SimulationLiveContext.Provider>
   );
 }

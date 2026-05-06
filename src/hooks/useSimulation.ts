@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Simulation } from '../engine/simulation';
 import { DEFAULT_CONFIGS } from '../engine/node';
-import type { NodeConfig, NodeId, NodeState, NodeType } from '../engine/types';
-import { scenarios, type Scenario } from '../scenarios';
+import type { FaultType, NodeConfig, NodeId, NodeState, NodeType } from '../engine/types';
+import { scenarios, scenarioToTopology, type Scenario } from '../scenarios';
 import {
   readUrlState,
   scenarioToUrlState,
@@ -31,29 +31,17 @@ export interface SimulationSnapshot {
   virtualTime: number;
   nodes: Map<NodeId, NodeState>;
   edges: Array<{ source: NodeId; target: NodeId }>;
+  faults: Map<NodeId, FaultType>;
   isRunning: boolean;
   seed: number;
   eventsProcessed: number;
   partitions: Set<string>;
 }
 
-function scenarioToTopology(scenario: Scenario) {
-  return {
-    nodes: scenario.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      config: { ...DEFAULT_CONFIGS[n.type], ...n.config },
-      requestsPerSecond: n.requestsPerSecond,
-    })),
-    edges: scenario.edges,
-    faults: scenario.faults,
-    maxVirtualTime: scenario.maxVirtualTime,
-  };
-}
-
 function urlToScenario(state: UrlState): Scenario {
   return {
     name: 'Custom',
+    description: 'Custom topology loaded from a shared URL.',
     seed: state.seed,
     nodes: state.nodes.map((n) => ({
       id: n.id,
@@ -67,46 +55,59 @@ function urlToScenario(state: UrlState): Scenario {
   };
 }
 
+// Uses the engine's cheap accessors — getState() deep-copies every message
+// and the whole event heap, which is too expensive to run per rAF frame.
 function buildSnapshot(sim: Simulation, isRunning: boolean): SimulationSnapshot {
-  const state = sim.getState();
   return {
-    virtualTime: state.virtualTime,
-    nodes: state.nodes,
-    edges: state.edges,
+    virtualTime: sim.getVirtualTime(),
+    nodes: sim.getNodeStates(),
+    edges: sim.getEdges(),
+    faults: sim.getFaults(),
     isRunning,
-    seed: state.seed,
+    seed: sim.getSeed(),
     eventsProcessed: sim.getEventsProcessed(),
     partitions: sim.getPartitions(),
   };
 }
 
+const MAX_PARTICLES = 80;
+
 function computeParticles(sim: Simulation): Particle[] {
-  const state = sim.getState();
+  const faults = sim.getFaults();
   const result: Particle[] = [];
-  let count = 0;
-  for (const [id, msg] of state.messages) {
-    if (msg.status !== 'IN_FLIGHT' || count > 80) continue;
+  // Edges are directional both ways for particles: requests A→B and responses B→A.
+  const edgeSet = new Set<string>();
+  for (const e of sim.getEdges()) {
+    edgeSet.add(`${e.source}->${e.target}`);
+    edgeSet.add(`${e.target}->${e.source}`);
+  }
 
-    const edge = state.edges.find((e) => e.source === msg.sourceId && e.target === msg.targetId);
-    if (!edge) continue;
+  for (const msg of sim.getInFlightMessages()) {
+    if (result.length >= MAX_PARTICLES) break;
+    if (!edgeSet.has(`${msg.sourceId}->${msg.targetId}`)) continue;
 
+    const id = msg.id;
     const meta = sim.getMessageMeta(id);
     if (!meta) continue;
 
     const flightMs = meta.arriveAt - meta.dispatchedAt;
     if (flightMs <= 0) continue;
 
-    const color: Particle['color'] = msg.retryCount > 0 ? 'yellow' : 'green';
+    // Red: headed into a node with an active hard fault (doomed request).
+    // Yellow: a retry attempt. Green: normal traffic.
+    let color: Particle['color'] = 'green';
+    if (faults.get(msg.targetId) === 'FAILED') color = 'red';
+    else if (msg.retryCount > 0) color = 'yellow';
+
     result.push({
       id,
-      edgeSource: edge.source,
-      edgeTarget: edge.target,
+      edgeSource: msg.sourceId,
+      edgeTarget: msg.targetId,
       color,
       progress: sim.getMessageFlightProgress(id),
       flightMs,
       dispatchedAt: meta.dispatchedAt,
     });
-    count += 1;
   }
   return result;
 }
@@ -123,7 +124,7 @@ export function useSimulation() {
     Object.fromEntries(initialScenario.nodes.map((n) => [n.id, n.position])),
   );
   const [selectedNodeId, setSelectedNodeId] = useState<NodeId | null>(null);
-  const [speed, setSpeed] = useState<SpeedMultiplier>(10);
+  const [speed, setSpeed] = useState<SpeedMultiplier>(1);
   const [isRunning, setIsRunning] = useState(false);
   const [partitionedEdges, setPartitionedEdges] = useState<Set<string>>(new Set());
   const [uiVersion, setUiVersion] = useState(0);
@@ -136,7 +137,7 @@ export function useSimulation() {
   const targetHorizonRef = useRef<number>(0);
   const isRunningRef = useRef(false);
   const stepAnimStartRef = useRef(0);
-  const speedRef = useRef<SpeedMultiplier>(10);
+  const speedRef = useRef<SpeedMultiplier>(1);
 
   const bumpUi = useCallback(() => {
     setUiVersion((v) => v + 1);
@@ -170,6 +171,9 @@ export function useSimulation() {
     (nextScenario: Scenario) => {
       const sim = new Simulation(scenarioToTopology(nextScenario), nextScenario.seed);
       simRef.current = sim;
+      // If the rAF loop is already running it keeps going with the new sim;
+      // a stale horizon from the previous run would fast-forward it instantly.
+      targetHorizonRef.current = 0;
       setPartitionedEdges(new Set());
       updateRefs(sim);
       bumpUi();
@@ -178,7 +182,19 @@ export function useSimulation() {
   );
 
   useEffect(() => {
-    initSim(initialScenario);
+    // Inline sim creation instead of initSim(): partitionedEdges/uiVersion are
+    // already at their initial values at mount, so no setState is needed here.
+    const sim = new Simulation(scenarioToTopology(initialScenario), initialScenario.seed);
+    simRef.current = sim;
+    targetHorizonRef.current = 0;
+    updateRefs(sim);
+    // Auto-play shortly after load so the first thing a visitor sees is a
+    // live simulation, not an empty paused canvas.
+    const timer = setTimeout(() => {
+      isRunningRef.current = true;
+      setIsRunning(true);
+    }, 800);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
   }, []);
 
@@ -217,7 +233,7 @@ export function useSimulation() {
     if (!sim) return;
 
     sim.setRunning(true);
-    targetHorizonRef.current = sim.getState().virtualTime;
+    targetHorizonRef.current = sim.getVirtualTime();
     let rafId = 0;
 
     const loop = (now: number) => {
@@ -244,8 +260,7 @@ export function useSimulation() {
           return;
         }
 
-        const hasWork = activeSim.getState().events.length > 0;
-        if (!hasWork && [...activeSim.getState().nodes.values()].every((n) => n.inFlight === 0)) {
+        if (activeSim.isIdle()) {
           stopPlayback(activeSim);
           return;
         }
@@ -307,8 +322,10 @@ export function useSimulation() {
       setScenario(found);
       setPositions(Object.fromEntries(found.nodes.map((n) => [n.id, n.position])));
       setSelectedNodeId(null);
-      setIsRunning(false);
       initSim(found);
+      // Picking a scenario starts it immediately — one click to a live demo.
+      isRunningRef.current = true;
+      setIsRunning(true);
     },
     [initSim],
   );

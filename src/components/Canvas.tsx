@@ -6,6 +6,7 @@ import ReactFlow, {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useReactFlow,
   type Connection,
   type Node,
   type OnInit,
@@ -41,8 +42,11 @@ type BuiltEdge = {
   data: { edgeKey: string; partitioned: boolean };
 };
 
-function buildEdges(sim: SimApi): BuiltEdge[] {
-  return sim.scenario.edges.map((e) => {
+function buildEdges(
+  scenarioEdges: Array<{ source: string; target: string }>,
+  partitionedEdges: Set<string>,
+): BuiltEdge[] {
+  return scenarioEdges.map((e) => {
     const edgeKey = `${e.source}->${e.target}`;
     return {
       id: edgeKey,
@@ -51,7 +55,7 @@ function buildEdges(sim: SimApi): BuiltEdge[] {
       type: 'animated',
       data: {
         edgeKey,
-        partitioned: sim.partitionedEdges.has(edgeKey),
+        partitioned: partitionedEdges.has(edgeKey),
       },
     };
   });
@@ -138,6 +142,7 @@ function FlowGraph({ sim, topologyNodes, topologyEdges, nodeIds }: FlowGraphProp
 
 function CanvasInner({ sim }: CanvasProps) {
   const scenarioKey = `${sim.scenario.name}-${sim.scenario.nodes.map((n) => n.id).join(',')}-${sim.scenario.edges.length}`;
+  const { project } = useReactFlow();
 
   const topologyNodes: Node[] = useMemo(
     () =>
@@ -150,7 +155,10 @@ function CanvasInner({ sim }: CanvasProps) {
     [sim.scenario.nodes, sim.positions],
   );
 
-  const topologyEdges = useMemo(() => buildEdges(sim), [sim.scenario.edges, sim.partitionedEdges]);
+  const topologyEdges = useMemo(
+    () => buildEdges(sim.scenario.edges, sim.partitionedEdges),
+    [sim.scenario.edges, sim.partitionedEdges],
+  );
 
   const nodeIds = useMemo(() => sim.scenario.nodes.map((n) => n.id), [sim.scenario.nodes]);
 
@@ -165,16 +173,15 @@ function CanvasInner({ sim }: CanvasProps) {
       const type = e.dataTransfer.getData('application/cascade-node') as NodeType;
       if (!type) return;
       const bounds = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      sim.addNode(type, {
-        x: e.clientX - bounds.left - 100,
-        y: e.clientY - bounds.top - 80,
-      });
+      // project() converts screen px to flow coordinates, honoring pan/zoom.
+      const pos = project({ x: e.clientX - bounds.left, y: e.clientY - bounds.top });
+      sim.addNode(type, { x: pos.x - 100, y: pos.y - 80 });
     },
-    [sim],
+    [sim, project],
   );
 
   return (
-    <div className="h-full w-full" onDragOver={onDragOver} onDrop={onDrop}>
+    <div className="relative h-full w-full" onDragOver={onDragOver} onDrop={onDrop}>
       <FlowGraph
         key={scenarioKey}
         sim={sim}
@@ -182,6 +189,16 @@ function CanvasInner({ sim }: CanvasProps) {
         topologyEdges={topologyEdges}
         nodeIds={nodeIds}
       />
+      <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 w-full max-w-xl -translate-x-1/2 px-4">
+        <div className="rounded-lg border border-slate-700/70 bg-slate-950/85 px-4 py-2.5 shadow-lg shadow-black/30 backdrop-blur-sm">
+          <div className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+            {sim.scenario.name}
+          </div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
+            {sim.scenario.description}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

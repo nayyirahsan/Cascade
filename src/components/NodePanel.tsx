@@ -1,5 +1,3 @@
-import { useEffect, useState } from 'react';
-import { useSimulationLive } from '../context/SimulationLiveContext';
 import { DEFAULT_CONFIGS } from '../engine/node';
 import type { NodeConfig } from '../engine/types';
 import type { useSimulation } from '../hooks/useSimulation';
@@ -34,15 +32,7 @@ function ConfigField({
 }
 
 export default function NodePanel({ sim }: NodePanelProps) {
-  const { snapshotRef } = useSimulationLive();
   const nodeId = sim.selectedNodeId;
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    if (!sim.isRunning || !nodeId) return;
-    const interval = setInterval(() => setTick((t) => t + 1), 300);
-    return () => clearInterval(interval);
-  }, [sim.isRunning, nodeId]);
 
   if (!nodeId) {
     return (
@@ -55,11 +45,9 @@ export default function NodePanel({ sim }: NodePanelProps) {
   const def = sim.scenario.nodes.find((n) => n.id === nodeId);
   if (!def) return null;
 
-  const live = snapshotRef.current?.nodes.get(nodeId);
   const config: NodeConfig = {
     ...DEFAULT_CONFIGS[def.type],
     ...def.config,
-    ...live?.config,
   };
 
   const update = (patch: Partial<NodeConfig>) => sim.updateNodeConfig(nodeId, patch);
