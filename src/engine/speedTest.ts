@@ -1,6 +1,48 @@
-import { DEFAULT_CONFIGS } from './node';
 import { Simulation } from './simulation';
-import { getScenarioByName } from '../scenarios';
+import { getScenarioByName, scenarioToTopology } from '../scenarios';
+
+/**
+ * Measure per-frame sim compute at 50x, mimicking the rAF loop's per-frame
+ * budget. Frames drop when compute exceeds ~16ms; report max/avg wall time.
+ */
+export function runFrameBudgetTest(frames = 600): {
+  pass: boolean;
+  message: string;
+  maxMs: number;
+  avgMs: number;
+} {
+  const scenario = getScenarioByName('Thundering Herd');
+  if (!scenario) return { pass: false, message: 'Scenario not found', maxMs: 0, avgMs: 0 };
+
+  const topology = { ...scenarioToTopology(scenario), maxVirtualTime: Number.POSITIVE_INFINITY };
+  const sim = new Simulation(topology, scenario.seed);
+
+  const speed = 50;
+  const frameBudgetVirtualMs = (1000 / 60) * speed;
+  let horizon = 0;
+  let maxMs = 0;
+  let totalMs = 0;
+
+  for (let i = 0; i < frames; i += 1) {
+    horizon += frameBudgetVirtualMs;
+    const start = performance.now();
+    sim.runUntil(horizon);
+    const elapsed = performance.now() - start;
+    maxMs = Math.max(maxMs, elapsed);
+    totalMs += elapsed;
+  }
+
+  const avgMs = totalMs / frames;
+  const pass = maxMs < 16;
+  return {
+    pass,
+    maxMs,
+    avgMs,
+    message: `50x frame budget over ${frames} frames (${(
+      (frames * frameBudgetVirtualMs) / 1000
+    ).toFixed(0)}s virtual): max ${maxMs.toFixed(2)}ms, avg ${avgMs.toFixed(3)}ms per frame (16ms budget)`,
+  };
+}
 
 /** Verify speed multiplier advances virtual time at different rates. */
 export function runSpeedTest(): { pass: boolean; message: string } {
@@ -8,13 +50,7 @@ export function runSpeedTest(): { pass: boolean; message: string } {
   if (!scenario) return { pass: false, message: 'Scenario not found' };
 
   const topology = {
-    nodes: scenario.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      config: { ...DEFAULT_CONFIGS[n.type], ...n.config },
-      requestsPerSecond: n.requestsPerSecond,
-    })),
-    edges: scenario.edges,
+    ...scenarioToTopology(scenario),
     faults: [],
     maxVirtualTime: 100_000,
   };
