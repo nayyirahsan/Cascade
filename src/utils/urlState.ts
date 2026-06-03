@@ -44,7 +44,8 @@ export function decodeState(param: string): UrlState | null {
   try {
     const json = fromBase64Url(param);
     const parsed = JSON.parse(json) as UrlState;
-    if (!parsed.seed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+    // typeof check, not truthiness: seed 0 is valid.
+    if (typeof parsed.seed !== 'number' || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
       return null;
     }
     return parsed;
