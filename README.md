@@ -25,15 +25,15 @@ A **pure TypeScript discrete-event engine** (`src/engine/`, zero dependencies, n
 ```mermaid
 flowchart TB
   subgraph ui [React UI — 60fps rAF loop]
-    Canvas[React Flow canvas]
-    Hook[useSimulation hook]
-    DOM[Direct DOM patching\nqueue bars, counters, particles]
+    Canvas["React Flow canvas"]
+    Hook["useSimulation hook"]
+    DOM["Direct DOM patching<br/>queue bars, counters, particles"]
   end
 
   subgraph engine [Simulation engine — pure TS]
-    Sim[simulation.ts\nevent handlers, node model]
-    Heap["scheduler.ts\nbinary min-heap (virtualTime, seq)"]
-    PRNG[prng.ts\nseeded mulberry32]
+    Sim["simulation.ts<br/>event handlers, node model"]
+    Heap["scheduler.ts<br/>binary min-heap (virtualTime, seq)"]
+    PRNG["prng.ts<br/>seeded mulberry32"]
   end
 
   Hook -->|"runUntil(horizon += Δt × speed)"| Sim
@@ -54,17 +54,17 @@ Event types: `MESSAGE_SEND`, `MESSAGE_ARRIVE`, `MESSAGE_TIMEOUT`, `RETRY_SCHEDUL
 
 ```mermaid
 sequenceDiagram
-  participant Loop as rAF loop (UI)
+  participant UI as rAF loop (UI)
   participant Sim as Simulation
   participant Heap as EventQueue (min-heap)
 
-  Loop->>Sim: runUntil(horizon)
-  loop while peek().virtualTime <= horizon
+  UI->>Sim: runUntil(horizon)
+  loop while peek().virtualTime ≤ horizon
     Sim->>Heap: pop() → next event by (time, seq)
     Sim->>Sim: handle event (may fail, retry, trip breaker)
     Sim->>Heap: push(follow-up events)
   end
-  Sim-->>Loop: cheap O(nodes) snapshot → refs → DOM
+  Sim-->>UI: cheap O(nodes) snapshot → refs → DOM
 ```
 
 The render loop advances a virtual-time horizon by `frameDelta × speedMultiplier` each frame and drains the heap up to it. Simulation stepping and React rendering are fully decoupled: per-frame state flows through refs and direct DOM patching, with React re-renders reserved for topology changes and low-frequency stats (~2.5 Hz).
