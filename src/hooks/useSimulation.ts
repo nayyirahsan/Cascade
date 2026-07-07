@@ -17,12 +17,8 @@ export interface Particle {
   edgeSource: string;
   edgeTarget: string;
   color: 'green' | 'red' | 'yellow';
-  /** Sim progress 0–1; used for step mode. */
+  /** Sim-truth flight progress 0–1, refreshed from virtual time every frame. */
   progress: number;
-  /** Virtual ms from dispatch to expected arrival. */
-  flightMs: number;
-  /** Virtual time when this hop was dispatched (changes on retry). */
-  dispatchedAt: number;
 }
 
 export const STEP_ANIM_MS = 450;
@@ -105,8 +101,6 @@ function computeParticles(sim: Simulation): Particle[] {
       edgeTarget: msg.targetId,
       color,
       progress: sim.getMessageFlightProgress(id),
-      flightMs,
-      dispatchedAt: meta.dispatchedAt,
     });
   }
   return result;

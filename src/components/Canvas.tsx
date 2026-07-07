@@ -124,8 +124,9 @@ function FlowGraph({ sim, topologyNodes, topologyEdges, nodeIds }: FlowGraphProp
           pannable
           zoomable
           nodeColor="#334155"
-          maskColor="rgb(10 12 16 / 0.75)"
-          className="!rounded-lg !border !border-slate-700 !shadow-lg"
+          nodeStrokeColor="#475569"
+          maskColor="rgba(2, 6, 23, 0.72)"
+          className="!m-3 !rounded-lg !border !border-slate-700/70 !bg-slate-900 !shadow-lg"
         />
       </ReactFlow>
       <SimulationLayer
@@ -133,7 +134,6 @@ function FlowGraph({ sim, topologyNodes, topologyEdges, nodeIds }: FlowGraphProp
         particlesRef={sim.particlesRef}
         isRunningRef={sim.isRunningRef}
         stepAnimStartRef={sim.stepAnimStartRef}
-        speedRef={sim.speedRef}
         nodeIds={nodeIds}
       />
     </div>
@@ -197,6 +197,20 @@ function CanvasInner({ sim }: CanvasProps) {
           <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
             {sim.scenario.description}
           </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-800 pt-1.5 text-[10px] text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-400" /> request
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-amber-400" /> retry
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-red-400" /> doomed (target down)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full border-[1.5px] border-emerald-400/75" /> response
+            </span>
+          </div>
         </div>
       </div>
     </div>

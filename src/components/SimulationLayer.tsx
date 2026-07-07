@@ -1,11 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { useStore, useStoreApi } from 'reactflow';
-import {
-  STEP_ANIM_MS,
-  type Particle,
-  type SimulationSnapshot,
-  type SpeedMultiplier,
-} from '../hooks/useSimulation';
+import { STEP_ANIM_MS, type Particle, type SimulationSnapshot } from '../hooks/useSimulation';
 import { buildEdgePath, pointOnHopPath, type HopPath } from '../utils/particleGeometry';
 
 const COLORS: Record<Particle['color'], string> = {
@@ -16,31 +11,6 @@ const COLORS: Record<Particle['color'], string> = {
 
 /** Stop just before the target handle along the edge curve. */
 const PARTICLE_END = 0.98;
-
-/** Spread newly dispatched dots so they don't overlap on the same handle. */
-function hashPhase(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i += 1) {
-    h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  }
-  return h / 4294967296;
-}
-
-interface ParticleVisual {
-  firstSeenAt: number;
-  dispatchedAt: number;
-}
-
-function playProgress(
-  p: Particle,
-  now: number,
-  speed: SpeedMultiplier,
-  visual: ParticleVisual,
-): number {
-  const wallMs = Math.max(p.flightMs / speed, 20);
-  const elapsed = now - visual.firstSeenAt;
-  return Math.min(1, elapsed / wallMs);
-}
 
 const CIRCUIT_CLASS: Record<string, string> = {
   CLOSED: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
@@ -89,7 +59,6 @@ interface SimulationLayerProps {
   particlesRef: RefObject<Particle[]>;
   isRunningRef: RefObject<boolean>;
   stepAnimStartRef: RefObject<number>;
-  speedRef: RefObject<SpeedMultiplier>;
   nodeIds: string[];
 }
 
@@ -97,15 +66,12 @@ function ParticleOverlay({
   particlesRef,
   isRunningRef,
   stepAnimStartRef,
-  speedRef,
 }: {
   particlesRef: RefObject<Particle[]>;
   isRunningRef: RefObject<boolean>;
   stepAnimStartRef: RefObject<number>;
-  speedRef: RefObject<SpeedMultiplier>;
 }) {
   const particlesGroupRef = useRef<SVGGElement>(null);
-  const particleVisualRef = useRef(new Map<string, ParticleVisual>());
   const store = useStoreApi();
   const transform = useStore((s) => s.transform);
 
@@ -126,11 +92,6 @@ function ParticleOverlay({
           const { nodeInternals, edges } = store.getState();
           const pathCache = new Map<string, HopPath | null>();
           const stepT = stepping ? Math.min(stepElapsed / STEP_ANIM_MS, 1) : 0;
-          const activeIds = new Set(particles.map((p) => p.id));
-
-          for (const id of particleVisualRef.current.keys()) {
-            if (!activeIds.has(id)) particleVisualRef.current.delete(id);
-          }
 
           for (const p of particles) {
             const pathKey = `${p.edgeSource}->${p.edgeTarget}`;
@@ -158,32 +119,30 @@ function ParticleOverlay({
               reversed = true;
             }
 
-            let animProgress: number;
-            if (playing) {
-              let visual = particleVisualRef.current.get(p.id);
-              if (!visual || visual.dispatchedAt !== p.dispatchedAt) {
-                visual = { firstSeenAt: now, dispatchedAt: p.dispatchedAt };
-                particleVisualRef.current.set(p.id, visual);
-              }
-              animProgress = playProgress(p, now, speedRef.current, visual);
-            } else {
-              animProgress = p.progress + stepT * (1 - p.progress);
-            }
-
-            const stagger = animProgress < 0.06 ? hashPhase(p.id) * 0.05 : 0;
-            const pathT = Math.min(Math.max(animProgress + stagger, 0), 1) * PARTICLE_END;
+            // Sim-truth position: p.progress is recomputed from virtual time on
+            // every play-loop frame, so the dot sits exactly where the engine
+            // says the message is — starting at the source handle at dispatch.
+            const animProgress = playing ? p.progress : p.progress + stepT * (1 - p.progress);
+            const pathT = Math.min(Math.max(animProgress, 0), 1) * PARTICLE_END;
             const { x, y } = pointOnHopPath(hopPath, reversed ? 1 - pathT : pathT);
 
             const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
             circle.setAttribute('cx', String(x));
             circle.setAttribute('cy', String(y));
-            circle.setAttribute('r', reversed ? '3.5' : '5');
-            circle.setAttribute('fill', COLORS[p.color]);
-            if (reversed) circle.setAttribute('opacity', '0.7');
+            if (reversed) {
+              // Responses travel target→source: smaller hollow dots so return
+              // traffic reads as deliberate, not as a rendering glitch.
+              circle.setAttribute('r', '3');
+              circle.setAttribute('fill', 'none');
+              circle.setAttribute('stroke', COLORS[p.color]);
+              circle.setAttribute('stroke-width', '1.5');
+              circle.setAttribute('opacity', '0.75');
+            } else {
+              circle.setAttribute('r', '5');
+              circle.setAttribute('fill', COLORS[p.color]);
+            }
             group.appendChild(circle);
           }
-        } else if (!playing && !stepping) {
-          particleVisualRef.current.clear();
         }
       }
 
@@ -192,7 +151,7 @@ function ParticleOverlay({
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [particlesRef, isRunningRef, stepAnimStartRef, speedRef, store]);
+  }, [particlesRef, isRunningRef, stepAnimStartRef, store]);
 
   const [tx, ty, zoom] = transform;
 
@@ -208,7 +167,6 @@ export default function SimulationLayer({
   particlesRef,
   isRunningRef,
   stepAnimStartRef,
-  speedRef,
   nodeIds,
 }: SimulationLayerProps) {
   const nodeIdsKey = nodeIds.join(',');
@@ -235,7 +193,6 @@ export default function SimulationLayer({
       particlesRef={particlesRef}
       isRunningRef={isRunningRef}
       stepAnimStartRef={stepAnimStartRef}
-      speedRef={speedRef}
     />
   );
 }
